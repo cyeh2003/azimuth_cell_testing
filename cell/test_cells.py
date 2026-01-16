@@ -30,28 +30,46 @@ kDcirCurrent_amps = 3.0
 kDcirDuration_seconds = 10.0
 kVoltageSenseDwell_seconds = 0.1
 
-class Keithley2430:
+class Keithley2461:
     def __init__(self, resource_name, mock=False, terminals='front'):
         self.mock = mock
         if not self.mock:
+            # Create a resource manager
             rm = pyvisa.ResourceManager()
-            self.inst = rm.open_resource(
-                resource_name,
-                baud_rate=57600,
-                data_bits=8,
-                parity=pyvisa.constants.Parity.none,
-                stop_bits=pyvisa.constants.StopBits.one,
-                write_termination="\n",
-                read_termination="\n",
-                )
+            # Open connection to the Keithley 2461
+            self.inst = rm.open_resource(resource_name)
+            # Configure communication settings (common for USB instruments)
+            self.inst.timeout = 5000  # 5 second timeout
+            self.inst.write_termination = '\n'
+            self.inst.read_termination = '\n'
+            
+            # Reset to default state and clear status
             self.inst.write("*RST")
-            self.inst.write(":SYST:RSEN ON") # 4-wire mode
+            self.inst.write("*CLS")
+            
+            # Configure 4-wire remote sense mode
+            self.inst.write(":SENS:VOLT:RSEN ON")
             
             # Select terminals
             if terminals.lower() == 'rear':
-                self.inst.write(":ROUT:TERM REAR")
+                self.inst.write(":ROUTe:TERMinals REAR")
             else:
-                self.inst.write(":ROUT:TERM FRONT")
+                self.inst.write(":ROUTe:TERMinals FRONT")
+            
+            # Set source function to current mode
+            self.inst.write(":SOURce:FUNCtion CURR")
+            
+            # Set source current range to auto
+            self.inst.write(":SOURce:CURR:RANGe:AUTO ON")
+            
+            # Set voltage measurement range to auto
+            self.inst.write(":SENS:VOLT:RANGe:AUTO ON")
+            
+            # Set current measurement range to auto
+            self.inst.write(":SENS:CURR:RANGe:AUTO ON")
+            
+            # Ensure output is OFF during initialization (safety)
+            self.inst.write(":OUTPut:STATe OFF")
         else:
             print(f"Mocking connection to {resource_name}")
 
@@ -61,7 +79,7 @@ class Keithley2430:
 
     @staticmethod
     def ParseReading(inputString):
-        cleanedString = Keithley2430.CleanString(inputString)
+        cleanedString = Keithley2461.CleanString(inputString)
         splitString = cleanedString.split(',')
         dataDict = {'voltage': float(splitString[0]), \
                     'current': float(splitString[1]), \
@@ -235,7 +253,7 @@ def run_tests(inst, serial_number):
 def main():
     parser = argparse.ArgumentParser(description="Battery Cell Testing Script")
     parser.add_argument("output_csv", help="Path to the output CSV file")
-    parser.add_argument("--resource", default="GPIB0::24::INSTR", help="VISA resource string for Keithley 2430")
+    parser.add_argument("--resource", default=None, help="VISA resource string for Keithley 2461 (e.g., USB0::0x05E6::0x2461::[serial]::INSTR). If not specified, will attempt to auto-detect USB device.")
     parser.add_argument("--mock", action="store_true", help="Run in mock mode without hardware")
     parser.add_argument("--terminals", choices=['front', 'rear'], default='front', help="Select front or rear terminals (default: front)")
     parser.add_argument("--test-connection", action="store_true", help="Test connection to the instrument and exit")
@@ -254,7 +272,31 @@ def main():
         pass # Append to existing file
 
     try:
-        inst = Keithley2430(args.resource, mock=args.mock, terminals=args.terminals)
+        # Auto-detect USB device if resource not specified
+        if args.resource is None and not args.mock:
+            print("No resource specified. Searching for USB devices...")
+            try:
+                rm = pyvisa.ResourceManager()
+                resources = rm.list_resources()
+                usb_resources = [r for r in resources if 'USB' in r.upper()]
+                if usb_resources:
+                    args.resource = usb_resources[0]
+                    print(f"Found USB device: {args.resource}")
+                else:
+                    print("Error: No USB devices found.")
+                    print("Please specify the resource manually with --resource option.")
+                    print("Example: --resource \"USB0::0x05E6::0x2461::[serial]::INSTR\"")
+                    print("\nTo find your device, you can list all resources:")
+                    print("  python -c \"import pyvisa; rm = pyvisa.ResourceManager(); print('\\n'.join(rm.list_resources()))\"")
+                    sys.exit(1)
+            except Exception as e:
+                print(f"Error detecting USB device: {e}")
+                print("Please specify the resource manually with --resource option.")
+                sys.exit(1)
+        elif args.resource is None:
+            args.resource = "MOCK"
+        
+        inst = Keithley2461(args.resource, mock=args.mock, terminals=args.terminals)
         
         if args.test_connection:
             success = inst.test_connection()
